@@ -13,8 +13,6 @@ Invoke ". build/envsetup.sh" from your shell to add the following functions to y
 - mmp:     Builds all of the modules in the current directory and pushes them to the device.
 - mmmp:    Builds all of the modules in the supplied directories and pushes them to the device.
 - mmma:    Builds all of the modules in the supplied directories, and their dependencies.
-- mms:     Short circuit builder. Quickly re-build the kernel, rootfs, boot and system images
-           without deep dependencies. Requires the full build to have run before.
 - cgrep:   Greps on all local C/C++ files.
 - ggrep:   Greps on all local Gradle files.
 - jgrep:   Greps on all local Java files.
@@ -29,7 +27,6 @@ Invoke ". build/envsetup.sh" from your shell to add the following functions to y
 - mka:      Builds using SCHED_BATCH on all processors
 - mkap:     Builds the module(s) using mka and pushes them to the device.
 - cmka:     Cleans and builds using mka.
-- repolastsync: Prints date and time of last repo sync.
 - reposync: Parallel repo sync using ionice and SCHED_BATCH
 - repopick: Utility to fetch changes from Gerrit.
 - installboot: Installs a boot.img to the connected device.
@@ -38,9 +35,12 @@ Invoke ". build/envsetup.sh" from your shell to add the following functions to y
 Look at the source to view more functions. The complete list is:
 EOF
     T=$(gettop)
+    local A
+    A=""
     for i in `cat $T/build/envsetup.sh | sed -n "/^[ \t]*function /s/function \([a-z_]*\).*/\1/p" | sort | uniq`; do
-      echo "$i"
-    done | column
+      A="$A $i"
+    done
+    echo $A
 }
 
 # Get the value of a build variable as an absolute path.
@@ -229,10 +229,6 @@ function setpaths()
 
     unset ANDROID_HOST_OUT
     export ANDROID_HOST_OUT=$(get_abs_build_var HOST_OUT)
-
-    if [ -n "$ANDROID_CCACHE_DIR" ]; then
-        export CCACHE_DIR=$ANDROID_CCACHE_DIR
-    fi
 
     # needed for building linux on MacOS
     # TODO: fix the path
@@ -573,7 +569,6 @@ alias bib=breakfast
 function lunch()
 {
     local answer
-    LUNCH_MENU_CHOICES=($(for l in ${LUNCH_MENU_CHOICES[@]}; do echo "$l"; done | sort))
 
     if [ "$1" ] ; then
         answer=$1
@@ -676,8 +671,7 @@ function tapas()
 {
     local arch="$(echo $* | xargs -n 1 echo | \grep -E '^(arm|x86|mips|armv5|arm64|x86_64|mips64)$' | xargs)"
     local variant="$(echo $* | xargs -n 1 echo | \grep -E '^(user|userdebug|eng)$' | xargs)"
-    local density="$(echo $* | xargs -n 1 echo | \grep -E '^(ldpi|mdpi|tvdpi|hdpi|xhdpi|xxhdpi|xxxhdpi|alldpi)$' | xargs)"
-    local apps="$(echo $* | xargs -n 1 echo | \grep -E -v '^(user|userdebug|eng|arm|x86|mips|armv5|arm64|x86_64|mips64|ldpi|mdpi|tvdpi|hdpi|xhdpi|xxhdpi|xxxhdpi|alldpi)$' | xargs)"
+    local apps="$(echo $* | xargs -n 1 echo | \grep -E -v '^(user|userdebug|eng|arm|x86|mips|armv5|arm64|x86_64|mips64)$' | xargs)"
 
     if [ $(echo $arch | wc -w) -gt 1 ]; then
         echo "tapas: Error: Multiple build archs supplied: $arch"
@@ -685,10 +679,6 @@ function tapas()
     fi
     if [ $(echo $variant | wc -w) -gt 1 ]; then
         echo "tapas: Error: Multiple build variants supplied: $variant"
-        return
-    fi
-    if [ $(echo $density | wc -w) -gt 1 ]; then
-        echo "tapas: Error: Multiple densities supplied: $density"
         return
     fi
 
@@ -707,13 +697,9 @@ function tapas()
     if [ -z "$apps" ]; then
         apps=all
     fi
-    if [ -z "$density" ]; then
-        density=alldpi
-    fi
 
     export TARGET_PRODUCT=$product
     export TARGET_BUILD_VARIANT=$variant
-    export TARGET_BUILD_DENSITY=$density
     export TARGET_BUILD_TYPE=release
     export TARGET_BUILD_APPS=$apps
 
@@ -740,7 +726,7 @@ function eat()
             done
             echo "Device Found.."
         fi
-    if (adb shell getprop ro.cm.device | grep -q "$CM_BUILD");
+    if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
         # if adbd isn't root we can't write to /cache/recovery/
         adb root
@@ -912,12 +898,7 @@ function mmm()
                 case $DIR in
                   showcommands | snod | dist | incrementaljavac) ARGS="$ARGS $DIR";;
                   GET-INSTALL-PATH) GET_INSTALL_PATH=$DIR;;
-                  *) if [ -d $DIR ]; then
-                         echo "No Android.mk in $DIR.";
-                     else
-                         echo "Couldn't locate the directory $DIR";
-                     fi
-                     return 1;;
+                  *) echo "No Android.mk in $DIR."; return 1;;
                 esac
             fi
         done
@@ -1064,85 +1045,6 @@ function pid()
     fi
 }
 
-# coredump_setup - enable core dumps globally for any process
-#                  that has the core-file-size limit set correctly
-#
-# NOTE: You must call also coredump_enable for a specific process
-#       if its core-file-size limit is not set already.
-# NOTE: Core dumps are written to ramdisk; they will not survive a reboot!
-
-function coredump_setup()
-{
-	echo "Getting root...";
-	adb root;
-	adb wait-for-device;
-
-	echo "Remounting root parition read-write...";
-	adb shell mount -w -o remount -t rootfs rootfs;
-	sleep 1;
-	adb wait-for-device;
-	adb shell mkdir -p /cores;
-	adb shell mount -t tmpfs tmpfs /cores;
-	adb shell chmod 0777 /cores;
-
-	echo "Granting SELinux permission to dump in /cores...";
-	adb shell restorecon -R /cores;
-
-	echo "Set core pattern.";
-	adb shell 'echo /cores/core.%p > /proc/sys/kernel/core_pattern';
-
-	echo "Done."
-}
-
-# coredump_enable - enable core dumps for the specified process
-# $1 = PID of process (e.g., $(pid mediaserver))
-#
-# NOTE: coredump_setup must have been called as well for a core
-#       dump to actually be generated.
-
-function coredump_enable()
-{
-	local PID=$1;
-	if [ -z "$PID" ]; then
-		printf "Expecting a PID!\n";
-		return;
-	fi;
-	echo "Setting core limit for $PID to infinite...";
-	adb shell prlimit $PID 4 -1 -1
-}
-
-# core - send SIGV and pull the core for process
-# $1 = PID of process (e.g., $(pid mediaserver))
-#
-# NOTE: coredump_setup must be called once per boot for core dumps to be
-#       enabled globally.
-
-function core()
-{
-	local PID=$1;
-
-	if [ -z "$PID" ]; then
-		printf "Expecting a PID!\n";
-		return;
-	fi;
-
-	local CORENAME=core.$PID;
-	local COREPATH=/cores/$CORENAME;
-	local SIG=SEGV;
-
-	coredump_enable $1;
-
-	local done=0;
-	while [ $(adb shell "[ -d /proc/$PID ] && echo -n yes") ]; do
-		printf "\tSending SIG%s to %d...\n" $SIG $PID;
-		adb shell kill -$SIG $PID;
-		sleep 1;
-	done;
-
-	adb shell "while [ ! -f $COREPATH ] ; do echo waiting for $COREPATH to be generated; sleep 1; done"
-	echo "Done: core is under $COREPATH on device.";
-}
-
 # systemstack - dump the current stack trace of all threads in the system process
 # to the usual ANR traces file
 function systemstack()
@@ -1226,151 +1128,10 @@ function is64bit()
     fi
 }
 
-function adb_get_product_device() {
-  echo `adb shell getprop ro.product.device | sed s/.$//`
-}
-
-# returns 0 when process is not traced
-function adb_get_traced_by() {
-  echo `adb shell cat /proc/$1/status | grep -e "^TracerPid:" | sed "s/^TracerPid:\t//" | sed s/.$//`
-}
-
-function gdbclient() {
-  # TODO:
-  # 1. Check for ANDROID_SERIAL/multiple devices
-  local PROCESS_NAME="n/a"
-  local PID=$1
-  local PORT=5039
-  if [ -z "$PID" ]; then
-    echo "Usage: gdbclient <pid|processname> [port number]"
-    return -1
-  fi
-  local DEVICE=$(adb_get_product_device)
-
-  if [ -z "$DEVICE" ]; then
-    echo "Error: Unable to get device name. Please check if device is connected and ANDROID_SERIAL is set."
-    return -2
-  fi
-
-  if [ -n "$2" ]; then
-    PORT=$2
-  fi
-
-  local ROOT=$(gettop)
-  if [ -z "$ROOT" ]; then
-    # This is for the situation with downloaded symbols (from the build server)
-    # we check if they are available.
-    ROOT=`realpath .`
-  fi
-
-  local OUT_ROOT="$ANDROID_PRODUCT_OUT"
-  local SYMBOLS_DIR="$OUT_ROOT/symbols"
-
-  if [ ! -d $SYMBOLS_DIR ]; then
-    echo "Error: couldn't find symbols: $SYMBOLS_DIR does not exist or is not a directory."
-    return -3
-  fi
-
-  # let's figure out which executable we are about to debug
-
-  # check if user specified a name -> resolve to pid
-  if [[ ! "$PID" =~ ^[0-9]+$ ]] ; then
-    PROCESS_NAME=$PID
-    PID=$(pid --exact $PROCESS_NAME)
-    if [ -z "$PID" ]; then
-      echo "Error: couldn't resolve pid by process name: $PROCESS_NAME"
-      return -4
-    fi
-  fi
-
-  local EXE=`adb shell readlink /proc/$PID/exe | sed s/.$//`
-  # TODO: print error in case there is no such pid
-  local LOCAL_EXE_PATH=$SYMBOLS_DIR$EXE
-
-  if [ ! -f $LOCAL_EXE_PATH ]; then
-    echo "Error: unable to find symbols for executable $EXE: file $LOCAL_EXE_PATH does not exist"
-    return -5
-  fi
-
-  local USE64BIT=""
-
-  if [[ "$(file $LOCAL_EXE_PATH)" =~ 64-bit ]]; then
-    USE64BIT="64"
-  fi
-
-  local GDB=
-  local GDB64=
-  local CPU_ABI=`adb shell getprop ro.product.cpu.abilist | sed s/.$//`
-  # TODO: we assume these are available via $PATH
-  if [[ $CPU_ABI =~ (^|,)arm64 ]]; then
-    GDB=arm-linux-androideabi-gdb
-    GDB64=aarch64-linux-android-gdb
-  elif [[ $CPU_ABI =~ (^|,)arm ]]; then
-    GDB=arm-linux-androideabi-gdb
-  elif [[ $CPU_ABI =~ (^|,)x86_64 ]]; then
-    GDB=x86_64-linux-androideabi-gdb
-  elif [[ $CPU_ABI =~ (^|,)x86 ]]; then
-    GDB=x86_64-linux-androideabi-gdb
-  elif [[ $CPU_ABI =~ (^|,)mips64 ]]; then
-    GDB=mipsel-linux-android-gdb
-    GDB64=mips64el-linux-android-gdb
-  elif [[ $CPU_ABI =~ (^|,)mips ]]; then
-    GDB=mipsel-linux-android-gdb
-  else
-    echo "Error: unrecognized cpu.abilist: $CPU_ABI"
-    return -6
-  fi
-
-  # TODO: check if tracing process is gdbserver and not some random strace...
-  if [ $(adb_get_traced_by $PID) -eq 0 ]; then
-    # start gdbserver
-    echo "Starting gdbserver..."
-    # TODO: check if adb is already listening $PORT
-    # to avoid unnecessary calls
-    echo ". adb forward for port=$PORT..."
-    adb forward tcp:$PORT tcp:$PORT
-    echo ". starting gdbserver to attach to pid=$PID..."
-    adb shell gdbserver$USE64BIT :$PORT --attach $PID &
-    echo ". give it couple of seconds to start..."
-    sleep 2
-    echo ". done"
-  else
-    echo "It looks like gdbserver is already attached to $PID (process is traced), trying to connect to it using local port=$PORT"
-  fi
-
-  local OUT_SO_SYMBOLS=$SYMBOLS_DIR/system/lib$USE64BIT
-  local OUT_VENDOR_SO_SYMBOLS=$SYMBOLS_DIR/vendor/lib$USE64BIT
-  local ART_CMD=""
-
-  echo >|"$OUT_ROOT/gdbclient.cmds" "set solib-absolute-prefix $SYMBOLS_DIR"
-  echo >>"$OUT_ROOT/gdbclient.cmds" "set solib-search-path $OUT_SO_SYMBOLS:$OUT_SO_SYMBOLS/hw:$OUT_SO_SYMBOLS/ssl/engines:$OUT_SO_SYMBOLS/drm:$OUT_SO_SYMBOLS/egl:$OUT_SO_SYMBOLS/soundfx:$OUT_VENDOR_SO_SYMBOLS:$OUT_VENDOR_SO_SYMBOLS/hw:$OUT_VENDOR_SO_SYMBOLS/egl"
-  local DALVIK_GDB_SCRIPT=$ROOT/development/scripts/gdb/dalvik.gdb
-  if [ -f $DALVIK_GDB_SCRIPT ]; then
-    echo >>"$OUT_ROOT/gdbclient.cmds" "source $DALVIK_GDB_SCRIPT"
-    ART_CMD="art-on"
-  else
-    echo "Warning: couldn't find $DALVIK_GDB_SCRIPT - ART debugging options will not be available"
-  fi
-  echo >>"$OUT_ROOT/gdbclient.cmds" "target remote :$PORT"
-  if [[ $EXE =~ (^|/)(app_process|dalvikvm)(|32|64)$ ]]; then
-    echo >> "$OUT_ROOT/gdbclient.cmds" $ART_CMD
-  fi
-
-  echo >>"$OUT_ROOT/gdbclient.cmds" ""
-
-  local WHICH_GDB=$GDB
-
-  if [ -n "$USE64BIT" -a -n "$GDB64" ]; then
-    WHICH_GDB=$GDB64
-  fi
-
-  gdbwrapper $WHICH_GDB "$OUT_ROOT/gdbclient.cmds" "$LOCAL_EXE_PATH"
-}
-
 # gdbclient now determines whether the user wants to debug a 32-bit or 64-bit
 # executable, set up the approriate gdbserver, then invokes the proper host
 # gdb.
-function gdbclient_old()
+function gdbclient()
 {
    local OUT_ROOT=$(get_abs_build_var PRODUCT_OUT)
    local OUT_SYMBOLS=$(get_abs_build_var TARGET_OUT_UNSTRIPPED)
@@ -1984,7 +1745,7 @@ function installboot()
     sleep 1
     adb wait-for-online shell mount /system 2>&1 > /dev/null
     adb wait-for-online remount
-    if (adb shell getprop ro.cm.device | grep -q "$CM_BUILD");
+    if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
         adb push $OUT/boot.img /cache/
         for i in $OUT/system/lib/modules/*;
@@ -2029,7 +1790,7 @@ function installrecovery()
     sleep 1
     adb wait-for-online shell mount /system 2>&1 >> /dev/null
     adb wait-for-online remount
-    if (adb shell getprop ro.cm.device | grep -q "$CM_BUILD");
+    if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
         adb push $OUT/recovery.img /cache/
         adb shell dd if=/cache/recovery.img of=$PARTITION
@@ -2336,20 +2097,14 @@ function cmrebase() {
 }
 
 function mka() {
-    local T=$(gettop)
-    if [ "$T" ]; then
-        case `uname -s` in
-            Darwin)
-                make -C $T -j `sysctl hw.ncpu|cut -d" " -f2` "$@"
-                ;;
-            *)
-                mk_timer schedtool -B -n 1 -e ionice -n 1 make -C $T -j$(cat /proc/cpuinfo | grep "^processor" | wc -l) "$@"
-                ;;
-        esac
-
-    else
-        echo "Couldn't locate the top of the tree.  Try setting TOP."
-    fi
+    case `uname -s` in
+        Darwin)
+            make -j `sysctl hw.ncpu|cut -d" " -f2` "$@"
+            ;;
+        *)
+            schedtool -B -n 1 -e ionice -n 1 make -j$(cat /proc/cpuinfo | grep "^processor" | wc -l) "$@"
+            ;;
+    esac
 }
 
 function cmka() {
@@ -2370,37 +2125,6 @@ function cmka() {
         mka clean
         mka
     fi
-}
-
-function mms() {
-    local T=$(gettop)
-    if [ -z "$T" ]
-    then
-        echo "Couldn't locate the top of the tree.  Try setting TOP."
-        return 1
-    fi
-
-    case `uname -s` in
-        Darwin)
-            local NUM_CPUS=$(sysctl hw.ncpu|cut -d" " -f2)
-            ONE_SHOT_MAKEFILE="__none__" \
-                make -C $T -j $NUM_CPUS "$@"
-            ;;
-        *)
-            local NUM_CPUS=$(cat /proc/cpuinfo | grep "^processor" | wc -l)
-            ONE_SHOT_MAKEFILE="__none__" \
-                mk_timer schedtool -B -n 1 -e ionice -n 1 \
-                make -C $T -j $NUM_CPUS "$@"
-            ;;
-    esac
-}
-
-
-function repolastsync() {
-    RLSPATH="$ANDROID_BUILD_TOP/.repo/.repo_fetchtimes.json"
-    RLSLOCAL=$(date -d "$(stat -c %z $RLSPATH)" +"%e %b %Y, %T %Z")
-    RLSUTC=$(date -d "$(stat -c %z $RLSPATH)" -u +"%e %b %Y, %T %Z")
-    echo "Last repo sync: $RLSLOCAL / $RLSUTC"
 }
 
 function reposync() {
@@ -2439,7 +2163,7 @@ function dopush()
         echo "Device Found."
     fi
 
-    if (adb shell getprop ro.cm.device | grep -q "$CM_BUILD") || [ "$FORCE_PUSH" == "true" ];
+    if (adb shell cat /system/build.prop | grep -q "ro.cm.device=$CM_BUILD");
     then
     # retrieve IP and PORT info if we're using a TCP connection
     TCPIPPORT=$(adb devices | egrep '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+[^0-9]+' \
@@ -2457,11 +2181,7 @@ function dopush()
     adb remount &> /dev/null
 
     mkdir -p $OUT
-    ($func $*|tee $OUT/.log;return ${PIPESTATUS[0]})
-    ret=$?;
-    if [ $ret -ne 0 ]; then
-        rm -f $OUT/.log;return $ret
-    fi
+    $func $* | tee $OUT/.log
 
     # Install: <file>
     LOC="$(cat $OUT/.log | sed -r 's/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[m|K]//g' | grep '^Install: ' | cut -d ':' -f 2)"
@@ -2635,10 +2355,10 @@ function get_make_command()
   echo command make
 }
 
-function mk_timer()
+function make()
 {
     local start_time=$(date +"%s")
-    $@
+    $(get_make_command) "$@"
     local ret=$?
     local end_time=$(date +"%s")
     local tdiff=$(($end_time-$start_time))
@@ -2661,11 +2381,6 @@ function mk_timer()
     echo -e " ####"
     echo
     return $ret
-}
-
-function make()
-{
-    mk_timer $(get_make_command) "$@"
 }
 
 

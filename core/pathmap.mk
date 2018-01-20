@@ -116,6 +116,7 @@ FRAMEWORKS_BASE_SUBDIRS := \
 	    sax \
 	    telecomm \
 	    telephony \
+	    phone \
 	    wifi \
 	    keystore \
 	    rs \

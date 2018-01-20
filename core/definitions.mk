@@ -355,10 +355,6 @@ define find-other-java-files
 	$(call find-subdir-files,$(1) -name "*.java" -and -not -name ".*")
 endef
 
-define find-other-aidl-files
-	$(call find-subdir-files,$(1) -name "*.aidl" -and -not -name ".*")
-endef
-
 define find-other-html-files
 	$(call find-subdir-files,$(1) -name "*.html" -and -not -name ".*")
 endef
@@ -1194,16 +1190,8 @@ $(hide) ldir=$(PRIVATE_INTERMEDIATES_DIR)/WHOLE/$(basename $(notdir $(1)))_objs;
 
 endef
 
-# $(1): the full path of the source static library.
-define extract-and-include-whole-static-libs-first
-$(if $(strip $(1)),
-@echo "preparing StaticLib: $(PRIVATE_MODULE) [including $(strip $(1))]"
-$(hide) cp $(1) $@)
-endef
-
 define extract-and-include-target-whole-static-libs
-$(call extract-and-include-whole-static-libs-first, $(firstword $(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES)))
-$(foreach lib,$(wordlist 2,999,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES)), \
+$(foreach lib,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES), \
     $(call _extract-and-include-single-target-whole-static-lib, $(lib)))
 endef
 
@@ -1240,8 +1228,7 @@ $(hide) ldir=$(PRIVATE_INTERMEDIATES_DIR)/WHOLE/$(basename $(notdir $(1)))_objs;
 endef
 
 define extract-and-include-host-whole-static-libs
-$(call extract-and-include-whole-static-libs-first, $(firstword $(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES)))
-$(foreach lib,$(wordlist 2,999,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES)), \
+$(foreach lib,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES), \
     $(call _extract-and-include-single-host-whole-static-lib, $(lib)))
 endef
 
@@ -2237,7 +2224,6 @@ include $(BUILD_SYSTEM)/distdir.mk
 
 # Include any vendor specific definitions.mk file
 -include $(TOPDIR)vendor/*/build/core/definitions.mk
--include $(TOPDIR)device/*/build/core/definitions.mk
 
 # broken:
 #	$(foreach file,$^,$(if $(findstring,.a,$(suffix $file)),-l$(file),$(file)))

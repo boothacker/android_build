@@ -80,6 +80,39 @@ $(INSTALLED_PERSISTIMAGE_TARGET): $(MKEXTUSERIMG) $(MAKE_EXT4FS) $(INTERNAL_PERS
 ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_PERSISTIMAGE_TARGET)
 ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_PERSISTIMAGE_TARGET)
 
+
+#----------------------------------------------------------------------
+# Generate device tree image (dt.img)
+#----------------------------------------------------------------------
+ifeq ($(strip $(BOARD_KERNEL_SEPARATED_DT)),true)
+ifeq ($(strip $(BUILD_TINY_ANDROID)),true)
+include device/qcom/common/dtbtool/Android.mk
+endif
+
+ifeq ($(strip $(TARGET_CUSTOM_DTBTOOL)),)
+DTBTOOL_NAME := dtbToolCM
+else
+DTBTOOL_NAME := $(TARGET_CUSTOM_DTBTOOL)
+endif
+
+DTBTOOL := $(HOST_OUT_EXECUTABLES)/$(DTBTOOL_NAME)$(HOST_EXECUTABLE_SUFFIX)
+
+INSTALLED_DTIMAGE_TARGET := $(PRODUCT_OUT)/dt.img
+
+define build-dtimage-target
+    $(call pretty,"Target dt image: $(INSTALLED_DTIMAGE_TARGET)")
+    $(hide) $(DTBTOOL) -o $@ -s $(BOARD_KERNEL_PAGESIZE) -p $(KERNEL_OUT)/scripts/dtc/ $(KERNEL_OUT)/arch/arm/boot/
+    $(hide) chmod a+r $@
+endef
+
+$(INSTALLED_DTIMAGE_TARGET): $(DTBTOOL) $(INSTALLED_KERNEL_TARGET)
+	$(build-dtimage-target)
+
+ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_DTIMAGE_TARGET)
+ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_DTIMAGE_TARGET)
+endif
+
+
 #----------------------------------------------------------------------
 # Generate 1GB userdata image for 8930
 #----------------------------------------------------------------------
@@ -102,35 +135,6 @@ $(INSTALLED_1G_USERDATAIMAGE_TARGET): $(INSTALLED_USERDATAIMAGE_TARGET)
 
 ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_1G_USERDATAIMAGE_TARGET)
 ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_1G_USERDATAIMAGE_TARGET)
-
-endif
-
-
-#----------------------------------------------------------------------
-# Generate extra userdata images (for variants with multiple mmc sizes)
-#----------------------------------------------------------------------
-ifneq ($(BOARD_USERDATAEXTRAIMAGE_PARTITION_SIZE),)
-
-ifndef BOARD_USERDATAEXTRAIMAGE_PARTITION_NAME
-  BOARD_USERDATAEXTRAIMAGE_PARTITION_NAME := extra
-endif
-
-BUILT_USERDATAEXTRAIMAGE_TARGET := $(PRODUCT_OUT)/userdata_$(BOARD_USERDATAEXTRAIMAGE_PARTITION_NAME).img
-
-define build-userdataextraimage-target
-    $(call pretty,"Target EXTRA userdata fs image: $(INSTALLED_USERDATAEXTRAIMAGE_TARGET)")
-    @mkdir -p $(TARGET_OUT_DATA)
-    $(hide) $(MKEXTUSERIMG) -s $(TARGET_OUT_DATA) $@ ext4 data $(BOARD_USERDATAEXTRAIMAGE_PARTITION_SIZE)
-    $(hide) chmod a+r $@
-    $(hide) $(call assert-max-image-size,$@,$(BOARD_USERDATAEXTRAIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-INSTALLED_USERDATAEXTRAIMAGE_TARGET := $(BUILT_USERDATAEXTRAIMAGE_TARGET)
-$(INSTALLED_USERDATAEXTRAIMAGE_TARGET): $(INSTALLED_USERDATAIMAGE_TARGET)
-	$(build-userdataextraimage-target)
-
-ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_USERDATAEXTRAIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_USERDATAEXTRAIMAGE_TARGET)
 
 endif
 

@@ -29,11 +29,6 @@ import threading
 import time
 import zipfile
 
-try:
-  from backports import lzma;
-except ImportError:
-  lzma = None
-
 import blockimgdiff
 from rangelib import *
 
@@ -66,10 +61,6 @@ OPTIONS.tempfiles = []
 OPTIONS.device_specific = None
 OPTIONS.extras = {}
 OPTIONS.info_dict = None
-
-# Stash size cannot exceed cache_size * threshold.
-OPTIONS.cache_size = None
-OPTIONS.stash_threshold = 0.8
 
 
 # Values for "certificate" in apkcerts that mean special things.
@@ -305,7 +296,6 @@ def BuildBootableImage(sourcedir, fs_config_file, info_dict=None):
 
   ramdisk_img = tempfile.NamedTemporaryFile()
   img = tempfile.NamedTemporaryFile()
-  bootimg_key = os.getenv("PRODUCT_PRIVATE_KEY", None)
 
   if os.access(fs_config_file, os.F_OK):
     cmd = ["mkbootfs", "-f", fs_config_file, os.path.join(sourcedir, "RAMDISK")]
@@ -365,16 +355,15 @@ def BuildBootableImage(sourcedir, fs_config_file, info_dict=None):
       cmd.append("--ramdisk_offset")
       cmd.append(open(fn).read().rstrip("\n"))
 
-    fn = os.path.join(sourcedir, "dt")
+    fn = os.path.join(sourcedir, "dt_args")
     if os.access(fn, os.F_OK):
       cmd.append("--dt")
-      cmd.append(fn)
+      cmd.append(open(fn).read().rstrip("\n"))
 
     fn = os.path.join(sourcedir, "pagesize")
     if os.access(fn, os.F_OK):
-      kernel_pagesize=open(fn).read().rstrip("\n")
       cmd.append("--pagesize")
-      cmd.append(kernel_pagesize)
+      cmd.append(open(fn).read().rstrip("\n"))
 
     args = info_dict.get("mkbootimg_args", None)
     if args and args.strip():
@@ -387,45 +376,9 @@ def BuildBootableImage(sourcedir, fs_config_file, info_dict=None):
   assert p.returncode == 0, "mkbootimg of %s image failed" % (
       os.path.basename(sourcedir),)
 
-  if bootimg_key and os.path.exists(bootimg_key) and kernel_pagesize > 0:
-    print "Signing bootable image..."
-    bootimg_key_passwords = {}
-    bootimg_key_passwords.update(PasswordManager().GetPasswords(bootimg_key.split()))
-    bootimg_key_password = bootimg_key_passwords[bootimg_key]
-    if bootimg_key_password is not None:
-        bootimg_key_password += "\n"
-    img_sha256 = tempfile.NamedTemporaryFile()
-    img_sig = tempfile.NamedTemporaryFile()
-    img_sig_padded = tempfile.NamedTemporaryFile()
-    img_secure = tempfile.NamedTemporaryFile()
-    p = Run(["openssl", "dgst", "-sha256", "-binary", "-out", img_sha256.name, img.name],
-        stdout=subprocess.PIPE)
-    p.communicate()
-    assert p.returncode == 0, "signing of bootable image failed"
-    p = Run(["openssl", "rsautl", "-sign", "-in", img_sha256.name, "-inkey", bootimg_key, "-out",
-        img_sig.name, "-passin", "stdin"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    p.communicate(bootimg_key_password)
-    assert p.returncode == 0, "signing of bootable image failed"
-    p = Run(["dd", "if=/dev/zero", "of=%s" % img_sig_padded.name, "bs=%s" % kernel_pagesize,
-        "count=1"], stdout=subprocess.PIPE)
-    p.communicate()
-    assert p.returncode == 0, "signing of bootable image failed"
-    p = Run(["dd", "if=%s" % img_sig.name, "of=%s" % img_sig_padded.name, "conv=notrunc"],
-        stdout=subprocess.PIPE)
-    p.communicate()
-    assert p.returncode == 0, "signing of bootable image failed"
-    p = Run(["cat", img.name, img_sig_padded.name], stdout=img_secure.file.fileno())
-    p.communicate()
-    assert p.returncode == 0, "signing of bootable image failed"
-    shutil.copyfile(img_secure.name, img.name)
-    img_sha256.close()
-    img_sig.close()
-    img_sig_padded.close()
-    img_secure.close()
-
   if info_dict.get("verity_key", None):
     path = "/" + os.path.basename(sourcedir).lower()
-    cmd = ["boot_signer", path, img.name, info_dict["verity_key"] + ".pk8", info_dict["verity_key"] + ".x509.pem", img.name]
+    cmd = ["boot_signer", path, img.name, info_dict["verity_key"], img.name]
     p = Run(cmd, stdout=subprocess.PIPE)
     p.communicate()
     assert p.returncode == 0, "boot_signer of %s image failed" % path
@@ -481,7 +434,7 @@ def UnzipTemp(filename, pattern=None):
   OPTIONS.tempfiles.append(tmp)
 
   def unzip_to_dir(filename, dirname):
-    subprocess.call(["rm", "-rf", dirname + filename, "targetfiles-*"])
+    cmd = ["rm", "-rf", dirname + filename, "targetfiles-*"]
     cmd = ["unzip", "-o", "-q", filename, "-d", dirname]
     if pattern is not None:
       cmd.append(pattern)
@@ -609,7 +562,6 @@ def CheckSize(data, target, info_dict):
   fs_type = None
   limit = None
   if info_dict["fstab"]:
-    if mount_point == "/userdata_extra": mount_point = "/data"
     if mount_point == "/userdata": mount_point = "/data"
     p = info_dict["fstab"][mount_point]
     fs_type = p.fs_type
@@ -1109,23 +1061,13 @@ def ComputeDifferences(diffs):
 
 
 class BlockDifference:
-  def __init__(self, partition, tgt, src=None, check_first_block=False, version=None, use_lzma=False):
+  def __init__(self, partition, tgt, src=None, check_first_block=False):
     self.tgt = tgt
     self.src = src
     self.partition = partition
     self.check_first_block = check_first_block
-    self.use_lzma = use_lzma
 
-    if version is None:
-      version = 1
-      if OPTIONS.info_dict:
-        version = max(
-            int(i) for i in
-            OPTIONS.info_dict.get("blockimgdiff_versions", "1").split(","))
-    self.version = version
-
-    b = blockimgdiff.BlockImageDiff(tgt, src, threads=OPTIONS.worker_threads,
-                                    version=self.version, use_lzma=use_lzma)
+    b = blockimgdiff.BlockImageDiff(tgt, src, threads=OPTIONS.worker_threads)
     tmpdir = tempfile.mkdtemp()
     OPTIONS.tempfiles.append(tmpdir)
     self.path = os.path.join(tmpdir, partition)
@@ -1136,92 +1078,54 @@ class BlockDifference:
   def WriteScript(self, script, output_zip, progress=None):
     if not self.src:
       # write the output unconditionally
-      script.Print("Patching %s image unconditionally..." % (self.partition,))
+      if progress: script.ShowProgress(progress, 0)
+      self._WriteUpdate(script, output_zip)
+
     else:
-      script.Print("Patching %s image after verification." % (self.partition,))
-
-    if progress: script.ShowProgress(progress, 0)
-    self._WriteUpdate(script, output_zip)
-
-  def WriteVerifyScript(self, script):
-    partition = self.partition
-    if not self.src:
-      script.Print("Image %s will be patched unconditionally." % (partition,))
-    else:
-      if self.version >= 3:
-        script.AppendExtra(('if (range_sha1("%s", "%s") == "%s" || '
-                            'block_image_verify("%s", '
-                            'package_extract_file("%s.transfer.list"), '
-                            '"%s.new.dat", "%s.patch.dat")) then') % (
-                            self.device, self.src.care_map.to_string_raw(),
-                            self.src.TotalSha1(),
-                            self.device, partition, partition, partition))
-      else:
-        script.AppendExtra('if range_sha1("%s", "%s") == "%s" then' %
-                            (self.device, self.src.care_map.to_string_raw(),
-                            self.src.TotalSha1()))
-      script.Print('Verified %s image...' % (partition,))
-      script.AppendExtra('else');
-
-      # When generating incrementals for the system and vendor partitions,
-      # explicitly check the first block (which contains the superblock) of
-      # the partition to see if it's what we expect. If this check fails,
-      # give an explicit log message about the partition having been
-      # remounted R/W (the most likely explanation) and the need to flash to
-      # get OTAs working again.
       if self.check_first_block:
         self._CheckFirstBlock(script)
 
-      # Abort the OTA update. Note that the incremental OTA cannot be applied
-      # even if it may match the checksum of the target partition.
-      # a) If version < 3, operations like move and erase will make changes
-      #    unconditionally and damage the partition.
-      # b) If version >= 3, it won't even reach here.
-      script.AppendExtra(('abort("%s partition has unexpected contents");\n'
-                          'endif;') % (partition,))
+      script.AppendExtra('if range_sha1("%s", "%s") == "%s" then' %
+                         (self.device, self.src.care_map.to_string_raw(),
+                          self.src.TotalSha1()))
+      script.Print("Patching %s image..." % (self.partition,))
+      if progress: script.ShowProgress(progress, 0)
+      self._WriteUpdate(script, output_zip)
+      script.AppendExtra(('else\n'
+                          '  (range_sha1("%s", "%s") == "%s") ||\n'
+                          '  abort("%s partition has unexpected contents");\n'
+                          'endif;') %
+                         (self.device, self.tgt.care_map.to_string_raw(),
+                          self.tgt.TotalSha1(), self.partition))
 
   def _WriteUpdate(self, script, output_zip):
     partition = self.partition
-    suffix = ".new.dat"
-
     with open(self.path + ".transfer.list", "rb") as f:
       ZipWriteStr(output_zip, partition + ".transfer.list", f.read())
-    if lzma and self.use_lzma:
-      suffix += ".xz"
-      with open(self.path + suffix, "rb") as f:
-        ZipWriteStr(output_zip, partition + suffix, f.read(),
-                           compression=zipfile.ZIP_STORED)
-    else:
-      with open(self.path + suffix, "rb") as f:
-        ZipWriteStr(output_zip, partition + suffix, f.read())
+    with open(self.path + ".new.dat", "rb") as f:
+      ZipWriteStr(output_zip, partition + ".new.dat", f.read())
     with open(self.path + ".patch.dat", "rb") as f:
       ZipWriteStr(output_zip, partition + ".patch.dat", f.read(),
                          compression=zipfile.ZIP_STORED)
 
     call = (('block_image_update("%s", '
              'package_extract_file("%s.transfer.list"), '
-             '"%s%s", "%s.patch.dat");\n') %
-            (self.device, partition, partition, suffix, partition))
+             '"%s.new.dat", "%s.patch.dat");\n') %
+            (self.device, partition, partition, partition))
     script.AppendExtra(script._WordWrap(call))
-
-  def _HashBlocks(self, source, ranges):
-    data = source.ReadRangeSet(ranges)
-    ctx = sha1()
-
-    for p in data:
-      ctx.update(p)
-
-    return ctx.hexdigest()
 
   def _CheckFirstBlock(self, script):
     r = RangeSet((0, 1))
-    srchash = self._HashBlocks(self.src, r);
+    h = sha1()
+    for data in self.src.ReadRangeSet(r):
+      h.update(data)
+    h = h.hexdigest()
 
     script.AppendExtra(('(range_sha1("%s", "%s") == "%s") || '
                         'abort("%s has been remounted R/W; '
                         'reflash device to reenable OTA updates");')
-                       % (self.device, r.to_string_raw(), srchash,
-                          self.device))
+                       % (self.device, r.to_string_raw(), h, self.device))
+
 
 DataImage = blockimgdiff.DataImage
 

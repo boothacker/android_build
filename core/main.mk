@@ -101,9 +101,6 @@ include $(BUILD_SYSTEM)/cleanbuild.mk
 # Bring in Qualcomm helper macros
 include $(BUILD_SYSTEM)/qcom_utils.mk
 
-# Bring in Mediatek helper macros too
-include $(BUILD_SYSTEM)/mtk_utils.mk
-
 # Include the google-specific config
 -include vendor/google/build/config.mk
 
@@ -143,8 +140,8 @@ $(warning ************************************************************)
 $(error Directory names containing spaces not supported)
 endif
 
-java_version_str := $(shell unset _JAVA_OPTIONS JAVA_TOOL_OPTIONS && java -version 2>&1)
-javac_version_str := $(shell unset _JAVA_OPTIONS JAVA_TOOL_OPTIONS && javac -version 2>&1)
+java_version_str := $(shell unset _JAVA_OPTIONS && java -version 2>&1)
+javac_version_str := $(shell unset _JAVA_OPTIONS && javac -version 2>&1)
 
 # Check for the correct version of java, should be 1.7 by
 # default, and 1.6 if LEGACY_USE_JAVA6 is set.
@@ -491,12 +488,7 @@ endif
 ifneq ($(ONE_SHOT_MAKEFILE),)
 # We've probably been invoked by the "mm" shell function
 # with a subdirectory's makefile.
-
-# No Makefiles to include if we are performing a mms/short-circuit build. Only
-# the targets mentioned by main.mk and tasks/* are built (kernel, boot.img etc)
-ifneq ($(ONE_SHOT_MAKEFILE),__none__)
 include $(ONE_SHOT_MAKEFILE)
-endif
 # Change CUSTOM_MODULES to include only modules that were
 # defined by this makefile; this will install all of those
 # modules as a side-effect.  Do this after including ONE_SHOT_MAKEFILE
